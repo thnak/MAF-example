@@ -1,0 +1,26 @@
+## .NET
+bin/
+obj/
+*.csproj.user
+*.sln.DotSettings.user
+.vs/
+.vscode/
+
+## Build artifacts
+*.dll
+*.exe
+*.pdb
+
+## Dependencies
+packages/
+.nuget/
+
+## IDE
+.idea/
+*.swp
+*.swo
+*~
+
+## OS
+.DS_Store
+Thumbs.db
