@@ -11,4 +11,7 @@
   <Folder Name="/structured-output/">
     <Project Path="structured-output/json-repair/JsonRepair.StructuredOutput.csproj" />
   </Folder>
+  <Folder Name="/agents/">
+    <Project Path="agents/tool-call-repair/ToolCallRepair.csproj" />
+  </Folder>
 </Solution>
