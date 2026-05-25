@@ -1,92 +1,70 @@
 using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.DependencyInjection;
-
-var services = new ServiceCollection();
+using OpenAI;
+using System.ClientModel;
 
 var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY")
     ?? throw new InvalidOperationException("OPENAI_API_KEY not set");
 
-services.AddOpenAIChatClient(modelId: "gpt-4o-mini", apiKey: apiKey);
+IChatClient chatClient = new OpenAIClient(new ApiKeyCredential(apiKey))
+    .GetChatClient("gpt-4o-mini")
+    .AsIChatClient();
 
-var sp = services.BuildServiceProvider();
-var chatClient = sp.GetRequiredService<IChatClient>();
-
-// Create three review agents with different perspectives
-var qualityReviewer = new HarnessAgent(
+var qualityReviewer = new ChatClientAgent(
     chatClient,
-    maxContextWindowTokens: 128_000,
-    maxOutputTokens: 4_000,
-    new HarnessAgentOptions
-    {
-        Name = "QualityReviewer",
-        Description = "Reviews content quality and clarity",
-        ChatOptions = new ChatOptions
-        {
-            Instructions = "You are a quality reviewer. Evaluate the content for clarity, coherence, and technical accuracy. List issues and suggestions.",
-        }
-    }
-);
+    instructions: "You are a quality reviewer. Evaluate the content for clarity, coherence, and technical accuracy. List issues and suggestions.",
+    name: "QualityReviewer",
+    description: "Reviews content quality and clarity");
 
-var complianceReviewer = new HarnessAgent(
+var complianceReviewer = new ChatClientAgent(
     chatClient,
-    maxContextWindowTokens: 128_000,
-    maxOutputTokens: 4_000,
-    new HarnessAgentOptions
-    {
-        Name = "ComplianceReviewer",
-        Description = "Reviews content for compliance and security",
-        ChatOptions = new ChatOptions
-        {
-            Instructions = "You are a compliance reviewer. Check the content for security risks, privacy concerns, and regulatory compliance. Flag any issues.",
-        }
-    }
-);
+    instructions: "You are a compliance reviewer. Check the content for security risks, privacy concerns, and regulatory compliance. Flag any issues.",
+    name: "ComplianceReviewer",
+    description: "Reviews content for compliance and security");
 
-var styleReviewer = new HarnessAgent(
+var styleReviewer = new ChatClientAgent(
     chatClient,
-    maxContextWindowTokens: 128_000,
-    maxOutputTokens: 4_000,
-    new HarnessAgentOptions
-    {
-        Name = "StyleReviewer",
-        Description = "Reviews content style and tone",
-        ChatOptions = new ChatOptions
-        {
-            Instructions = "You are a style reviewer. Evaluate the content's tone, voice consistency, and writing style. Suggest improvements.",
-        }
-    }
-);
+    instructions: "You are a style reviewer. Evaluate the content's tone, voice consistency, and writing style. Suggest improvements.",
+    name: "StyleReviewer",
+    description: "Reviews content style and tone");
 
-// Create a workflow with fan-out pattern: one coordinator sends to three reviewers in parallel
-var workflowBuilder = new WorkflowBuilder();
-var quality = workflowBuilder.Track(qualityReviewer);
-var compliance = workflowBuilder.Track(complianceReviewer);
-var style = workflowBuilder.Track(styleReviewer);
+var workflow = AgentWorkflowBuilder.BuildConcurrent(
+    "ContentReview",
+    [qualityReviewer, complianceReviewer, styleReviewer]);
 
-// Fan-out: one source connects to multiple reviewers
-workflowBuilder.ForwardMessage<string>(quality, [compliance, style]);
-
-var workflow = workflowBuilder.Build();
-
-// Run the workflow
-var session = new WorkflowSession();
-var content = @"
-Our new AI solution provides state-of-the-art machine learning capabilities.
+var content = @"Our new AI solution provides state-of-the-art machine learning capabilities.
 It processes data at scale and integrates seamlessly with existing systems.
-Users can deploy within hours and see immediate results.
-";
+Users can deploy within hours and see immediate results.";
+
+var input = new List<ChatMessage> { new(ChatRole.User, content) };
 
 Console.WriteLine("=== Fan-Out Multi-Agent Workflow (Parallel Review) ===");
 Console.WriteLine($"Content to Review:\n{content}\n");
 
-try
+await using StreamingRun run = await InProcessExecution.RunStreamingAsync(workflow, input);
+await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
+
+await foreach (WorkflowEvent evt in run.WatchStreamAsync())
 {
-    var result = await workflow.ExecuteAsync(session, content);
-    Console.WriteLine("=== Review Results ===");
-    Console.WriteLine(result);
-}
-catch (Exception ex)
-{
-    Console.Error.WriteLine($"Error: {ex.Message}");
+    switch (evt)
+    {
+        case WorkflowOutputEvent output:
+            Console.WriteLine("\n=== Review Results ===");
+            foreach (var msg in output.As<List<ChatMessage>>() ?? [])
+                Console.WriteLine($"[{msg.AuthorName ?? "Agent"}] {msg.Text}");
+            break;
+
+        case WorkflowErrorEvent error:
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.Error.WriteLine($"Workflow error: {error.Exception?.Message}");
+            Console.ResetColor();
+            break;
+
+        case ExecutorFailedEvent failed:
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.Error.WriteLine($"Executor '{failed.ExecutorId}' failed: {failed.Data}");
+            Console.ResetColor();
+            break;
+    }
 }

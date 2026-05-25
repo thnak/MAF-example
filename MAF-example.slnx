@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/fanout/">
+    <Project Path="fanout/content-review/Fanout.ContentReview.csproj" />
+  </Folder>
+  <Folder Name="/graphrag-pipeline/">
+    <Project Path="graphrag-pipeline/GraphRag.Pipeline.csproj" />
+  </Folder>
+  <Folder Name="/sequential/">
+    <Project Path="sequential/research/Sequential.Research.csproj" />
+  </Folder>
+</Solution>

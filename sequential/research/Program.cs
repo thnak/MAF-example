@@ -1,71 +1,58 @@
 using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Workflows;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.DependencyInjection;
-
-var services = new ServiceCollection();
+using OpenAI;
+using System.ClientModel;
 
 var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY")
     ?? throw new InvalidOperationException("OPENAI_API_KEY not set");
 
-services.AddOpenAIChatClient(modelId: "gpt-4o-mini", apiKey: apiKey);
+IChatClient chatClient = new OpenAIClient(new ApiKeyCredential(apiKey))
+    .GetChatClient("gpt-4o-mini")
+    .AsIChatClient();
 
-var sp = services.BuildServiceProvider();
-var chatClient = sp.GetRequiredService<IChatClient>();
-
-// Create two agents: one for research, one for summarization
-var researchAgent = new HarnessAgent(
+var researchAgent = new ChatClientAgent(
     chatClient,
-    maxContextWindowTokens: 128_000,
-    maxOutputTokens: 8_000,
-    new HarnessAgentOptions
-    {
-        Name = "ResearchAgent",
-        Description = "Researches a topic and gathers detailed information",
-        ChatOptions = new ChatOptions
-        {
-            Instructions = "You are a research agent. Use web search to find comprehensive information about the given topic. Present findings in structured sections.",
-        }
-    }
-);
+    instructions: "You are a research agent. Find comprehensive information about the given topic. Present findings in structured sections.",
+    name: "ResearchAgent",
+    description: "Researches a topic and gathers detailed information");
 
-var summaryAgent = new HarnessAgent(
+var summaryAgent = new ChatClientAgent(
     chatClient,
-    maxContextWindowTokens: 128_000,
-    maxOutputTokens: 4_000,
-    new HarnessAgentOptions
-    {
-        Name = "SummaryAgent",
-        Description = "Summarizes research findings into concise key points",
-        ChatOptions = new ChatOptions
-        {
-            Instructions = "You are a summarization agent. Take detailed research findings and distill them into 5-7 key bullet points. Be concise and actionable.",
-        }
-    }
-);
+    instructions: "You are a summarization agent. Take detailed research findings and distill them into 5-7 key bullet points. Be concise and actionable.",
+    name: "SummaryAgent",
+    description: "Summarizes research findings into concise key points");
 
-// Create a workflow that chains the agents: ResearchAgent -> SummaryAgent
-var workflowBuilder = new WorkflowBuilder();
-var research = workflowBuilder.Track(researchAgent);
-var summary = workflowBuilder.Track(summaryAgent);
+var workflow = AgentWorkflowBuilder.BuildSequential("ResearchAndSummarize", researchAgent, summaryAgent);
 
-workflowBuilder.AddChain(research, [summary]);
-
-var workflow = workflowBuilder.Build();
-
-// Run the workflow
-var session = new WorkflowSession();
-var input = "What are the latest trends in artificial intelligence for 2025?";
+var input = new List<ChatMessage> { new(ChatRole.User, "What are the latest trends in artificial intelligence for 2025?") };
 
 Console.WriteLine("=== Sequential Multi-Agent Workflow ===");
-Console.WriteLine($"Input: {input}\n");
+Console.WriteLine($"Input: {input[0].Text}\n");
 
-try
+await using StreamingRun run = await InProcessExecution.RunStreamingAsync(workflow, input);
+await run.TrySendMessageAsync(new TurnToken(emitEvents: true));
+
+await foreach (WorkflowEvent evt in run.WatchStreamAsync())
 {
-    var result = await workflow.ExecuteAsync(session, input);
-    Console.WriteLine("=== Workflow Result ===");
-    Console.WriteLine(result);
-}
-catch (Exception ex)
-{
-    Console.Error.WriteLine($"Error: {ex.Message}");
+    switch (evt)
+    {
+        case WorkflowOutputEvent output:
+            Console.WriteLine("\n=== Workflow Result ===");
+            foreach (var msg in output.As<List<ChatMessage>>() ?? [])
+                Console.WriteLine($"[{msg.AuthorName ?? "Agent"}] {msg.Text}");
+            break;
+
+        case WorkflowErrorEvent error:
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.Error.WriteLine($"Workflow error: {error.Exception?.Message}");
+            Console.ResetColor();
+            break;
+
+        case ExecutorFailedEvent failed:
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.Error.WriteLine($"Executor '{failed.ExecutorId}' failed: {failed.Data}");
+            Console.ResetColor();
+            break;
+    }
 }
