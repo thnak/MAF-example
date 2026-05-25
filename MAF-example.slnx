@@ -8,4 +8,7 @@
   <Folder Name="/sequential/">
     <Project Path="sequential/research/Sequential.Research.csproj" />
   </Folder>
+  <Folder Name="/structured-output/">
+    <Project Path="structured-output/json-repair/JsonRepair.StructuredOutput.csproj" />
+  </Folder>
 </Solution>
