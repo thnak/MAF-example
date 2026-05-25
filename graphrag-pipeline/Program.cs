@@ -15,10 +15,11 @@ IChatClient chatClient = new OpenAIClient(new ApiKeyCredential(apiKey))
     .AsIChatClient();
 
 // Storage — swap with real implementations (MongoDB, PostgreSQL, LanceDB, etc.)
-IGraphStore graphStore = new InMemoryGraphStore();
+var graphStore = new InMemoryGraphStore();
 IVectorStore vectorStore = new InMemoryVectorStore();
 IEmbeddingModel embeddingModel = new StubEmbeddingModel();     // swap: OpenAI text-embedding-3-small
 ICommunityDetector communityDetector = new GreedyCommunityDetector(); // swap: Leiden/Louvain
+IGraphReader graphReader = new InMemoryGraphReader(graphStore);
 
 var config = new PipelineConfig
 {
@@ -37,6 +38,7 @@ var summarization = new SummarizationExecutor(chatClient);
 var cluster = new ClusterExecutor(communityDetector);
 var communityReport = new CommunityReportExecutor(chatClient);
 var embed = new EmbedExecutor(embeddingModel, vectorStore, graphStore);
+var search = new SearchExecutor(embeddingModel, vectorStore, graphReader, chatClient);
 
 // Wire the linear pipeline using WorkflowBuilder
 var workflow = new WorkflowBuilder(chunking)
@@ -99,5 +101,35 @@ foreach (var evt in run.NewEvents)
             Console.Error.WriteLine($"Executor '{failed.ExecutorId}' failed: {failed.Data}");
             Console.ResetColor();
             break;
+    }
+}
+
+// === Local Search Demo ===
+Console.WriteLine("\n=== Local Search Demo ===");
+
+var searchWorkflow = new WorkflowBuilder(search)
+    .WithOutputFrom(search)
+    .Build();
+
+string[] queries =
+[
+    "Who founded Microsoft and what is the company known for?",
+    "What is the relationship between OpenAI and Microsoft?",
+];
+
+foreach (var query in queries)
+{
+    Console.WriteLine($"\nQ: {query}");
+    await using var searchRun = await InProcessExecution.RunAsync(searchWorkflow,
+        new SearchInput { Query = query });
+
+    foreach (var evt in searchRun.NewEvents)
+    {
+        if (evt is WorkflowOutputEvent { Data: SearchResult result })
+            Console.WriteLine($"A: {result.Answer}");
+        else if (evt is WorkflowErrorEvent err)
+            Console.Error.WriteLine($"Search error: {err.Exception?.Message}");
+        else if (evt is ExecutorFailedEvent fail)
+            Console.Error.WriteLine($"Search executor failed: {fail.Data}");
     }
 }
