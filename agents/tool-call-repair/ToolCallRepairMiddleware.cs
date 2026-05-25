@@ -21,6 +21,7 @@ public static class ToolCallRepairAgentBuilderExtensions
         => builder.Use(async (agent, context, next, ct) =>
         {
             TryCoerceArguments(context);
+            RepairSkillScriptArguments(context);
 
             try
             {
@@ -74,6 +75,46 @@ public static class ToolCallRepairAgentBuilderExtensions
             ? value.EnumerateArray().First()
 
         : null;
+
+    // AgentSkillsProvider's run_skill_script passes the inner script's arguments as a
+    // JsonElement? parameter named "arguments". ConvertToFunctionArguments (MAF internal)
+    // throws InvalidOperationException when that element is not a JSON object — which
+    // happens when the LLM omits or misformats arguments for a parameterless script.
+    //
+    // Fix: coerce the "arguments" value to null (→ empty AIFunctionArguments) or, when
+    // the LLM JSON-stringified the args object, unwrap the double-encoded string.
+    private static void RepairSkillScriptArguments(FunctionInvocationContext context)
+    {
+        if (context.Function.Name != "run_skill_script") return;
+        if (!context.Arguments.TryGetValue("arguments", out var raw)) return;
+        if (raw is not JsonElement el) return;
+
+        // Already valid or already null/undefined — nothing to do.
+        if (el.ValueKind is JsonValueKind.Object or JsonValueKind.Null or JsonValueKind.Undefined)
+            return;
+
+        // LLM sometimes JSON-stringifies the args object: '"{\"key\":1}"' → try to unwrap.
+        if (el.ValueKind == JsonValueKind.String)
+        {
+            var s = el.GetString();
+            if (!string.IsNullOrEmpty(s))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(s);
+                    if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                    {
+                        context.Arguments["arguments"] = doc.RootElement.Clone();
+                        return;
+                    }
+                }
+                catch (JsonException) { /* fall through to null */ }
+            }
+        }
+
+        // Any other non-object value (empty string, number, array, …) → treat as no args.
+        context.Arguments["arguments"] = null;
+    }
 
     // -------------------------------------------------------------------------
     // Error formatting: turn exceptions into LLM-readable feedback
